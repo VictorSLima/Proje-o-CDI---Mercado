@@ -259,8 +259,8 @@ td:first-child{text-align:left;font-family:var(--sans);color:var(--text);font-we
    CONFIG
 ════════════════════════════════════════════ */
 const CFG = {
-  // SGS 12 = CDI Over diário
-  SGS: 'https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/730?formato=json',
+  // SGS 4389 = CDI acumulado no mês (% a.m.) — já é taxa mensal, não precisa composição
+  SGS: 'https://api.bcb.gov.br/dados/serie/bcdata.sgs.4389/dados?formato=json&dataInicial=01/01/2023',
   // Focus — expectativas ANUAIS de Selic (mais estável, sem filtro de data problemático)
   FOCUS: "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/ExpectativasMercadoAnuais?$filter=Indicador%20eq%20'Selic'&$orderby=Data%20desc&$top=100&$format=json&$select=Data,DataReferencia,Media,Mediana",
   PROXIES: [
@@ -298,26 +298,19 @@ async function apiFetch(url) {
    TRANSFORMS
 ════════════════════════════════════════════ */
 
-// SGS série 12 = CDI diário. Compound per month.
-function buildRealized(daily) {
-  const map = {};
-  daily.forEach(({ data, valor }) => {
-    const [, mm, yyyy] = data.split('/');
-    const key = `${yyyy}-${mm}`;
-    const v = parseFloat(String(valor).replace(',', '.'));
-    if (isNaN(v)) return;
-    if (!map[key]) map[key] = { acc: 1, mm, yyyy };
-    map[key].acc *= (1 + v / 100);
-  });
-  return Object.entries(map)
-    .sort(([a],[b]) => a.localeCompare(b))
-    .map(([key, { acc, mm, yyyy }]) => ({
-      key,
-      label: periodLabel(key),
-      rate_am: (acc - 1) * 100,
-      rate_aa: (Math.pow(acc, 12) - 1) * 100,
-      type: 'realized',
-    }));
+// SGS 4389 = CDI acumulado no mês (% a.m.) — uma linha por mês, já pronto
+function buildRealized(monthly) {
+  return monthly
+    .map(({ data, valor }) => {
+      const [, mm, yyyy] = data.split('/');
+      const key = `${yyyy}-${mm}`;
+      const rate_am = parseFloat(String(valor).replace(',', '.'));
+      if (isNaN(rate_am)) return null;
+      const rate_aa = (Math.pow(1 + rate_am / 100, 12) - 1) * 100;
+      return { key, label: periodLabel(key), rate_am, rate_aa, type: 'realized' };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.key.localeCompare(b.key));
 }
 
 // Focus annual Selic — expand each year into monthly rows
@@ -591,8 +584,8 @@ const App = (() => {
       _setKPI('kMon',  f4(last.rate_am), 'mês de referência');
     }
     if (proj.length) {
-      const avg = proj.slice(0,12).reduce((s,r)=>s+r.rate_aa,0) / Math.min(proj.length,12);
-      _setKPI('kSelic', f2(avg), `média Focus ${Math.min(proj.length,12)}m`);
+      const avg = proj.reduce((s,r)=>s+r.rate_aa,0) / proj.length;
+      _setKPI('kSelic', f2(avg), `média Focus ${proj.length}m`);
     }
     if (last && prev) {
       _setKPI('kDelta', fpp(last.rate_aa - prev.rate_aa), `${prev.label} → ${last.label}`);
